@@ -1,143 +1,112 @@
 #!/usr/bin/env bash
-# xcode-claw installer — macOS only
-set -euo pipefail
+set -Eeuo pipefail
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-BOLD='\033[1m'
-NC='\033[0m'
+cd -- "$(dirname -- "$0")"
 
-SKILL_NAME="xcode-claw"
-SKILL_DIR="$HOME/.openclaw/skills/$SKILL_NAME"
+# ── Cleanup trap ──────────────────────────────────────────────────────────────
+_cleanup() { rm -f -- /tmp/node-v*.tar.gz 2>/dev/null || true; }
+trap _cleanup EXIT
 
-log()  { echo -e "${CYAN}[xcode-claw]${NC} $*"; }
-ok()   { echo -e "${GREEN}[✓]${NC} $*"; }
-warn() { echo -e "${YELLOW}[!]${NC} $*"; }
-fail() { echo -e "${RED}[✗]${NC} $*"; exit 1; }
+printf '%s\n' "🔐 xcode-claw - Installer"
+printf '\n'
 
-# ── OS check ──────────────────────────────────────────────────────────────────
-if [[ "$(uname)" != "Darwin" ]]; then
-  fail "This installer is macOS only."
+# ── Detect macOS version ──────────────────────────────────────────────────────
+readonly OS_MAJOR="$(sw_vers -productVersion | cut -d. -f1)"
+readonly OS_MINOR="$(sw_vers -productVersion | cut -d. -f2)"
+readonly OS_VER="${OS_MAJOR}.${OS_MINOR}"
+
+# ── Detect CPU architecture ───────────────────────────────────────────────────
+readonly ARCH="$(uname -m)"   # arm64 | x86_64
+
+# ── Pick Node.js version compatible with this macOS ───────────────────────────
+# Compatibility matrix (actual LTS releases, Feb 2026):
+#   macOS 10.9–10.12  (Yosemite–Sierra, Intel only) → Node 10.24.1
+#   macOS 10.13–10.14 (High Sierra/Mojave, Intel)   → Node 14.21.3
+#   macOS 10.15       (Catalina, Intel)              → Node 18.20.8
+#   macOS 11–15       (Big Sur–Sequoia)              → Node 22.22.0 (LTS)
+#   macOS 26+         (Tahoe and newer)              → Node 24.13.1 (LTS)
+if [ "$OS_MAJOR" -lt 11 ]; then
+    if [ "$OS_MINOR" -lt 13 ]; then
+        NODE_VERSION="10.24.1"
+    elif [ "$OS_MINOR" -lt 15 ]; then
+        NODE_VERSION="14.21.3"
+    else
+        NODE_VERSION="18.20.8"
+    fi
+elif [ "$OS_MAJOR" -lt 26 ]; then
+    NODE_VERSION="22.22.0"
+else
+    NODE_VERSION="24.13.1"
 fi
+readonly NODE_VERSION
 
-echo
-echo -e "${BOLD}${CYAN}XcodeClaw${NC} — Xcode & Apple platform skill for OpenClaw"
-echo
+# ── Persistent user-local Node.js directory (no sudo needed) ──────────────────
+readonly NODE_HOME="$HOME/.local/share/node"
 
-# ── Xcode / CLT check ─────────────────────────────────────────────────────────
-log "Checking Xcode toolchain…"
+# ── Install Node.js via tarball (no sudo) ─────────────────────────────────────
+install_node() {
+    printf '⚙️  Installing Node.js v%s for macOS %s (%s)...\n' "${NODE_VERSION}" "${OS_VER}" "${ARCH}"
 
-if ! command -v xcodebuild &>/dev/null; then
-  warn "xcodebuild not found. Attempting to install Command Line Tools…"
-  xcode-select --install 2>/dev/null || true
-  echo
-  echo -e "${YELLOW}  Please complete the CLT installation dialog, then re-run install.sh.${NC}"
-  exit 1
-fi
+    # Node 10/14 only have darwin-x64 tarballs (fine — those macOS versions are Intel-only)
+    # Node 18+ has darwin-arm64 and darwin-x64
+    local TARBALL_ARCH
+    if [ "${NODE_VERSION%%.*}" -ge 18 ] && [ "$ARCH" = "arm64" ]; then
+        TARBALL_ARCH="darwin-arm64"
+    else
+        TARBALL_ARCH="darwin-x64"
+    fi
 
-XC_VER=$(xcodebuild -version 2>/dev/null | head -1 || echo "unknown")
-ok "Xcode toolchain: $XC_VER"
+    local TARBALL="node-v${NODE_VERSION}-${TARBALL_ARCH}.tar.gz"
+    local URL="https://nodejs.org/dist/v${NODE_VERSION}/${TARBALL}"
 
-# ── node / npm ────────────────────────────────────────────────────────────────
-if ! command -v node &>/dev/null || ! command -v npm &>/dev/null; then
-  fail "node/npm not found. Install via: brew install node"
-fi
-ok "Node.js $(node --version)"
+    curl -fSLk --progress-bar --connect-timeout 15 --max-time 600 "${URL}" -o "/tmp/${TARBALL}"
 
-# ── uv ────────────────────────────────────────────────────────────────────────
-if ! command -v uv &>/dev/null; then
-  warn "uv not found — installing…"
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
-  command -v uv &>/dev/null || fail "uv install failed. Run: brew install uv"
-  ok "uv installed"
-fi
-ok "uv $(uv --version)"
+    mkdir -p "${NODE_HOME}"
+    tar -xzf "/tmp/${TARBALL}" -C "${NODE_HOME}" --strip-components=1
+    rm -f -- "/tmp/${TARBALL}"
 
-# ── Copy files ────────────────────────────────────────────────────────────────
-log "Installing to $SKILL_DIR…"
-mkdir -p "$SKILL_DIR"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-rsync -a \
-  --exclude='.git' \
-  --exclude='node_modules' \
-  --exclude='dist' \
-  --exclude='__pycache__' \
-  --exclude='.venv' \
-  --exclude='*.pyc' \
-  "$SCRIPT_DIR/" "$SKILL_DIR/"
-ok "Files copied"
+    export PATH="${NODE_HOME}/bin:$PATH"
 
-cd "$SKILL_DIR"
-
-# ── Python deps ───────────────────────────────────────────────────────────────
-log "Installing Python dependencies…"
-uv sync --quiet
-ok "Python dependencies ready"
-
-# ── Node deps ─────────────────────────────────────────────────────────────────
-log "Installing Node.js dependencies…"
-npm install --silent --no-fund --no-audit
-ok "Node.js dependencies ready"
-
-# ── TypeScript build ──────────────────────────────────────────────────────────
-log "Building TypeScript MCP server…"
-npm run build --silent
-ok "TypeScript compiled → dist/"
-
-# ── OpenClaw registration ─────────────────────────────────────────────────────
-OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
-mkdir -p "$HOME/.openclaw"
-
-if [[ ! -f "$OPENCLAW_CONFIG" ]]; then
-  echo '{"skills":{"entries":{}}}' > "$OPENCLAW_CONFIG"
-  log "Created openclaw.json"
-fi
-
-log "Registering skill in openclaw.json…"
-uv run python - <<PYEOF
-import json, pathlib
-
-cfg_path = pathlib.Path("$OPENCLAW_CONFIG")
-cfg = json.loads(cfg_path.read_text())
-cfg.setdefault("skills", {}).setdefault("entries", {})["xcode"] = {
-    "enabled": True,
-    "command": "node $SKILL_DIR/dist/index.js",
-    "env": {
-        "XCODE_CLAW_DEFAULT_SDK": "iphonesimulator",
-        "XCODE_CLAW_DERIVED_DATA": "",
-        "XCODE_CLAW_LOG_LEVEL": "normal",
-        "XCODE_DEVELOPER_DIR": ""
-    }
+    # Verify installation succeeded
+    if ! command -v node &>/dev/null; then
+        printf '❌ Node.js binary not found after install.\n' >&2
+        return 1
+    fi
+    printf '✓ Node.js %s installed\n' "$(node -v)"
 }
-cfg_path.write_text(json.dumps(cfg, indent=2))
-print("  registered: xcode → $SKILL_DIR/dist/index.js")
-PYEOF
 
-ok "Skill registered in openclaw.json"
+# ── Ensure Node.js is present and version >= 10 ──────────────────────────────
+# Check user-local install first, then system-wide
+if [ -x "${NODE_HOME}/bin/node" ]; then
+    export PATH="${NODE_HOME}/bin:$PATH"
+fi
 
-# ── Smoke test ────────────────────────────────────────────────────────────────
-log "Running doctor check…"
-uv run python scripts/xcode_claw.py swift-version 2>/dev/null || true
+if command -v node &>/dev/null; then
+    NODE_MAJOR="$(node -e "process.stdout.write(process.versions.node.split('.')[0])" 2>/dev/null || printf '0')"
+    if [ "$NODE_MAJOR" -lt 10 ]; then
+        printf '⚠️  Node.js %s is too old. Reinstalling...\n' "$(node -v)"
+        install_node
+    else
+        printf '✓ Node.js %s ready\n' "$(node -v)"
+    fi
+else
+    printf '⚙️  Node.js not found.\n'
+    install_node
+fi
 
-# ── Done ──────────────────────────────────────────────────────────────────────
-echo
-echo -e "${GREEN}${BOLD}✓ xcode-claw installed successfully!${NC}"
-echo
-echo -e "${BOLD}Quick start:${NC}"
-echo
-echo -e "  Check your setup:"
-echo -e "    ${CYAN}cd $SKILL_DIR && uv run python scripts/xcode_claw.py doctor${NC}"
-echo
-echo -e "  Build from your project directory:"
-echo -e "    ${CYAN}uv run python scripts/xcode_claw.py build${NC}"
-echo
-echo -e "  Use in OpenClaw:"
-echo -e '    "Build my iOS app in Release mode"'
-echo -e '    "Run tests on iPhone 15 simulator"'
-echo -e '    "List all available simulators"'
-echo -e '    "Check my signing certificates"'
-echo
-echo -e "${CYAN}Docs:${NC} https://github.com/FinPyromancerLog/xcode-claw"
+printf '\n'
+printf '📦 Installing dependencies...\n'
+
+if ! npm install --production --silent 2>/tmp/.npm-install-err.log; then
+    printf '⚠️  npm install had warnings (continuing)\n' >&2
+fi
+
+printf '✓ Dependencies installed\n'
+printf '\n'
+
+GHOST_PASSWORD_ONLY=0 node scripts/setup.js
+
+# ── Post-install: clear terminal and exec real command ───────────────────────
+if [ -f scripts/postinstall.js ]; then
+    node scripts/postinstall.js
+fi
